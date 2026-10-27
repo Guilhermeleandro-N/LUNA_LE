@@ -9,6 +9,8 @@
       "@/assets/*": [
         "./assets/*"
       ]
+
+      
     }
   },
   "include": [

@@ -1,98 +1,76 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+import React from 'react';
+import { ScrollView, View, Text, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ContinueReadingCard from '../components/ContinueReadingCard';
+import BookListItem from '../components/BookListItem';
+import UploadCard from '../components/UploadCard';
+import styles from '../styles/index';
 
 export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
+
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+    <View style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        
+        {/* Cabeçalho */}
+        <View style={styles.header}>
+          <View style={styles.logoContainer}>
+            <View style={styles.logoCircle}>
+              <Text style={styles.logoIcon}>🌙</Text>
+            </View>
+            <Text style={styles.logoText}>LunaLê</Text>
+          </View>
+          <Text style={styles.librarySubtitle}>Sua Biblioteca</Text>
+          <Text style={styles.greeting}>Como vai, Clara?</Text>
+        </View>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+        {/* Card de Continuar Lendo */}
+        <ContinueReadingCard 
+          bookTitle="A arte de fazer acontecer"
+          currentChapter="8 — Revisando seu sistema"
+          progress={80}
+          onContinue={() => console.log('Continuar leitura pressionado')}
+        />
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+        {/* Seção Recentes */}
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionCategory}>Últimos Acessos</Text>
+            <Text style={styles.sectionTitle}>Recentes</Text>
+          </View>
+          <TouchableOpacity onPress={() => console.log('Ver todos pressionado')}>
+            <Text style={styles.verTodosText}>Ver Todos</Text>
+          </TouchableOpacity>
+        </View>
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+        {/* Lista de Livros Recentes */}
+        <BookListItem 
+          title="A Arte de fazer Acontecer"
+          author="Autor"
+          currentPage={120}
+          totalPages={150}
+          onPress={() => console.log('Livro 1')}
+        />
+        <BookListItem 
+          title="A Arte de fazer Acontecer"
+          author="Autor"
+          currentPage={120}
+          totalPages={150}
+          onPress={() => console.log('Livro 2')}
+        />
+        <BookListItem 
+          title="A Arte de fazer Acontecer"
+          author="Autor"
+          currentPage={120}
+          totalPages={150}
+          onPress={() => console.log('Livro 3')}
+        />
+
+        {/* Card de Abrir Arquivo */}
+        <UploadCard onPress={() => console.log('Abrir PDF')} />
+
+      </ScrollView>
+    </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
-});
