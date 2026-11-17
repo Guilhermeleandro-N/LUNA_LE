@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   View,
@@ -14,19 +14,37 @@ import { WebView } from 'react-native-webview';
 import { File } from 'expo-file-system';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import {
+  getSavedReading,
+  saveReadingProgress,
+} from '../services/readingProgress';
+
+type PdfMessage = {
+  tipo: 'PDF_INFO' | 'PAGE_CHANGED' | 'ERRO_PDF';
+  page?: number;
+  totalPages?: number;
+  mensagem?: string;
+};
+
 export default function ReaderScreen() {
   const params = useLocalSearchParams<{
     uri: string;
     name: string;
   }>();
 
-  const uri = Array.isArray(params.uri)
+  const rawUri = Array.isArray(params.uri)
     ? params.uri[0]
     : params.uri;
 
-  const name = Array.isArray(params.name)
+  const uri = rawUri?.startsWith('file://')
+    ? rawUri
+    : rawUri
+      ? decodeURIComponent(rawUri)
+      : '';
+
+  const name = (Array.isArray(params.name)
     ? params.name[0]
-    : params.name;
+    : params.name) || 'Documento PDF';
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -35,6 +53,15 @@ export default function ReaderScreen() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Controle das páginas do documento
+  const [initialPage, setInitialPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(0);
+
+  const currentPageRef = useRef(1);
+  const totalPagesRef = useRef(0);
+
+  // A - Recupera o progresso salvo e carrega o PDF
   useEffect(() => {
     let active = true;
 
@@ -43,23 +70,23 @@ export default function ReaderScreen() {
         setLoading(true);
         setErrorMessage(null);
         setPdfBase64(null);
+        setTotalPages(0);
 
         if (!uri) {
-          throw new Error('O endereço do arquivo não foi recebido.');
+          throw new Error(
+            'O endereço do arquivo não foi recebido.'
+          );
         }
 
-        console.log('URI RECEBIDA PELO LEITOR:', uri);
+        // Recupera a última página salva
+        const saved = await getSavedReading(uri);
 
-        // Cria uma referência ao arquivo
+        const savedPage = Math.max(
+          1,
+          saved?.currentPage || 1
+        );
+
         const pdfFile = new File(uri);
-
-        // Verifica os dados do arquivo
-        console.log('ARQUIVO NO LEITOR:', {
-          uri: pdfFile.uri,
-          existe: pdfFile.exists,
-          tamanho: pdfFile.size,
-          tipo: pdfFile.type,
-        });
 
         if (!pdfFile.exists) {
           throw new Error(
@@ -67,27 +94,30 @@ export default function ReaderScreen() {
           );
         }
 
-        // Lê o conteúdo do PDF em Base64
-        console.log('INICIANDO LEITURA DO PDF...');
-
+        // Lê o arquivo como Base64
         const base64 = await pdfFile.base64();
 
-        console.log('PDF LIDO COM SUCESSO:', {
-          tamanhoBase64: base64.length,
-        });
-
-        if (!base64 || base64.length === 0) {
+        if (!base64) {
           throw new Error(
             'O arquivo PDF está vazio ou não pôde ser lido.'
           );
         }
 
         if (active) {
-          setPdfBase64(base64);
-        }
+          currentPageRef.current = savedPage;
+          totalPagesRef.current = 0;
 
+          setInitialPage(savedPage);
+          setCurrentPage(savedPage);
+          setPdfBase64(base64);
+
+          console.log(
+            'Última página salva:',
+            savedPage
+          );
+        }
       } catch (error) {
-        console.error('ERRO AO CARREGAR PDF:', error);
+        console.error('Erro ao carregar PDF:', error);
 
         if (active) {
           setErrorMessage(
@@ -96,7 +126,6 @@ export default function ReaderScreen() {
               : 'Não foi possível carregar o PDF.'
           );
         }
-
       } finally {
         if (active) {
           setLoading(false);
@@ -104,15 +133,103 @@ export default function ReaderScreen() {
       }
     }
 
-    loadPdf();
+    void loadPdf();
 
     return () => {
       active = false;
     };
   }, [uri]);
 
-  const html = pdfBase64
-    ? `
+  // A - Salva uma página no AsyncStorage
+  function savePage(page: number, count: number) {
+    if (!uri) return;
+
+    void saveReadingProgress({
+      uri,
+      name,
+      currentPage: page,
+      totalPages: count,
+    })
+      .then(() => {
+        console.log('Página salva:', page);
+      })
+      .catch((error) => {
+        console.error(
+          'Erro ao salvar página:',
+          error
+        );
+      });
+  }
+
+  // A - Recebe as mensagens enviadas pelo PDF.js
+  function handlePdfMessage(data: string) {
+    let message: PdfMessage;
+
+    try {
+      message = JSON.parse(data) as PdfMessage;
+    } catch {
+      return;
+    }
+
+    if (message.tipo === 'ERRO_PDF') {
+      setErrorMessage(
+        message.mensagem ||
+        'Ocorreu um erro ao exibir o PDF.'
+      );
+      return;
+    }
+
+    // Recebe o total de páginas do PDF
+    if (message.tipo === 'PDF_INFO') {
+      const count = Number(message.totalPages);
+
+      if (!Number.isInteger(count) || count < 1) {
+        return;
+      }
+
+      totalPagesRef.current = count;
+      setTotalPages(count);
+
+      const page = Math.min(
+        currentPageRef.current,
+        count
+      );
+
+      currentPageRef.current = page;
+      setCurrentPage(page);
+
+      savePage(page, count);
+    }
+
+    // Detecta quando o usuário muda de página
+    if (message.tipo === 'PAGE_CHANGED') {
+      const newPage = Number(message.page);
+
+      if (!Number.isInteger(newPage) || newPage < 1) {
+        return;
+      }
+
+      const page = totalPagesRef.current > 0
+        ? Math.min(newPage, totalPagesRef.current)
+        : newPage;
+
+      if (page === currentPageRef.current) {
+        return;
+      }
+
+      currentPageRef.current = page;
+      setCurrentPage(page);
+
+      // Salva automaticamente a nova página
+      savePage(page, totalPagesRef.current);
+    }
+  }
+
+  // B - PDF.js recupera a página e acompanha a rolagem
+  const html = useMemo(() => {
+    if (!pdfBase64) return '';
+
+    return `
       <!DOCTYPE html>
       <html lang="pt-BR">
       <head>
@@ -159,26 +276,89 @@ export default function ReaderScreen() {
         <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
         <script>
+          const initialPage = ${JSON.stringify(initialPage)};
+          const base64 = ${JSON.stringify(pdfBase64)};
+
+          let pageCount = 0;
+          let lastReportedPage = initialPage;
+          let readerReady = false;
+          let framePending = false;
+
+          function sendMessage(tipo, data) {
+            if (window.ReactNativeWebView) {
+              window.ReactNativeWebView.postMessage(
+                JSON.stringify({
+                  tipo: tipo,
+                  ...data
+                })
+              );
+            }
+          }
+
+          // Descobre qual página está visível
+          function getVisiblePage() {
+            const pages = document.querySelectorAll('.page');
+
+            let visiblePage = 1;
+            const position = window.scrollY + 100;
+
+            for (let i = 0; i < pages.length; i++) {
+              if (pages[i].offsetTop <= position) {
+                visiblePage = i + 1;
+              } else {
+                break;
+              }
+            }
+
+            return Math.max(
+              1,
+              Math.min(pageCount, visiblePage)
+            );
+          }
+
+          // Comunica a mudança de página
+          function reportCurrentPage() {
+            if (!readerReady) return;
+
+            const page = getVisiblePage();
+
+            if (page !== lastReportedPage) {
+              lastReportedPage = page;
+
+              sendMessage('PAGE_CHANGED', {
+                page: page
+              });
+            }
+          }
+
+          // Detecta a rolagem do documento
+          function handleScroll() {
+            if (!readerReady || framePending) {
+              return;
+            }
+
+            framePending = true;
+
+            requestAnimationFrame(function () {
+              framePending = false;
+              reportCurrentPage();
+            });
+          }
+
+          // Carrega o PDF e renderiza as páginas
           async function renderPdf() {
-            const loadingElement = document.getElementById('loading');
+            const loadingElement =
+              document.getElementById('loading');
 
             try {
-              console.log('INICIANDO PDF.JS...');
-
               if (typeof pdfjsLib === 'undefined') {
                 throw new Error(
-                  'Não foi possível carregar a biblioteca PDF.js. Verifique sua conexão com a internet.'
+                  'Não foi possível carregar o PDF.js. Verifique sua conexão com a internet.'
                 );
               }
 
-              console.log('PDF.JS CARREGADO COM SUCESSO.');
-
               pdfjsLib.GlobalWorkerOptions.workerSrc =
                 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-              const base64 = ${JSON.stringify(pdfBase64)};
-
-              console.log('CONVERTENDO BASE64...');
 
               const binary = atob(base64);
               const bytes = new Uint8Array(binary.length);
@@ -187,26 +367,25 @@ export default function ReaderScreen() {
                 bytes[i] = binary.charCodeAt(i);
               }
 
-              console.log('TAMANHO DOS DADOS:', bytes.length);
-
-              console.log('INICIANDO INTERPRETAÇÃO DO PDF...');
-
               const pdf = await pdfjsLib.getDocument({
                 data: bytes
               }).promise;
 
-              console.log('PDF INTERPRETADO:', pdf.numPages, 'páginas');
+              pageCount = pdf.numPages;
+
+              // Informa o total de páginas ao aplicativo
+              sendMessage('PDF_INFO', {
+                totalPages: pageCount
+              });
 
               loadingElement.remove();
 
-              // Renderiza as páginas uma por vez
+              // Renderiza cada página
               for (
                 let pageNumber = 1;
-                pageNumber <= pdf.numPages;
+                pageNumber <= pageCount;
                 pageNumber++
               ) {
-                console.log('RENDERIZANDO PÁGINA:', pageNumber);
-
                 const page = await pdf.getPage(pageNumber);
 
                 const containerWidth =
@@ -242,31 +421,76 @@ export default function ReaderScreen() {
                   canvasContext: context,
                   viewport: viewport
                 }).promise;
-
-                console.log('PÁGINA RENDERIZADA:', pageNumber);
               }
 
-              console.log('TODAS AS PÁGINAS FORAM RENDERIZADAS.');
+              // B - Retoma a leitura na última página salva
+              const targetPage = Math.min(
+                pageCount,
+                Math.max(1, initialPage)
+              );
+
+              const pages = document.querySelectorAll('.page');
+              const targetCanvas = pages[targetPage - 1];
+
+              if (targetCanvas) {
+                targetCanvas.scrollIntoView({
+                  block: 'start',
+                  behavior: 'instant'
+                });
+              }
+
+              // Começa a observar a rolagem
+              requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                  lastReportedPage = targetPage;
+                  readerReady = true;
+
+                  sendMessage('PAGE_CHANGED', {
+                    page: targetPage
+                  });
+
+                  window.addEventListener(
+                    'scroll',
+                    handleScroll,
+                    { passive: true }
+                  );
+                });
+              });
+
+              // Registra a página ao sair da WebView
+              window.addEventListener(
+                'pagehide',
+                reportCurrentPage
+              );
+
+              document.addEventListener(
+                'visibilitychange',
+                function () {
+                  if (document.hidden) {
+                    reportCurrentPage();
+                  }
+                }
+              );
 
             } catch (error) {
-              console.error('ERRO NO PDF.JS:', error);
+              console.error('Erro no PDF.js:', error);
 
-              const mensagem = error && error.message
-                ? error.message
-                : String(error);
+              const mensagem =
+                error && error.message
+                  ? error.message
+                  : String(error);
 
-              loadingElement.textContent =
-                'Erro ao exibir PDF: ' + mensagem;
-
-              // Envia o erro para o React Native
-              if (window.ReactNativeWebView) {
-                window.ReactNativeWebView.postMessage(
-                  JSON.stringify({
-                    tipo: 'ERRO_PDF',
-                    mensagem: mensagem
-                  })
-                );
+              if (
+                loadingElement &&
+                loadingElement.isConnected
+              ) {
+                loadingElement.textContent =
+                  'Erro ao exibir PDF: ' + mensagem;
               }
+
+              sendMessage('ERRO_PDF', {
+                mensagem: mensagem
+              });
             }
           }
 
@@ -274,26 +498,46 @@ export default function ReaderScreen() {
         </script>
       </body>
       </html>
-    `
-    : '';
+    `;
+  }, [pdfBase64, initialPage]);
+
+  const webSource = useMemo(() => ({ html }), [html]);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View
+      style={[
+        styles.container,
+        { paddingTop: insets.top },
+      ]}
+    >
       {/* Cabeçalho */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Text style={styles.backButton}>‹ Voltar</Text>
+          <Text style={styles.backButton}>
+            ‹ Voltar
+          </Text>
         </TouchableOpacity>
 
-        <Text style={styles.title} numberOfLines={1}>
-          {name || 'Leitor de PDF'}
-        </Text>
+        <View style={styles.headerInfo}>
+          <Text style={styles.title} numberOfLines={1}>
+            {name}
+          </Text>
+
+          {totalPages > 0 && (
+            <Text style={styles.pageLabel}>
+              Página {currentPage} de {totalPages}
+            </Text>
+          )}
+        </View>
       </View>
 
       {/* Conteúdo */}
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#6C63FF" />
+          <ActivityIndicator
+            size="large"
+            color="#6C63FF"
+          />
 
           <Text style={styles.message}>
             Carregando PDF...
@@ -322,21 +566,16 @@ export default function ReaderScreen() {
         <WebView
           key={uri}
           originWhitelist={['*']}
-          source={{ html }}
+          source={webSource}
           style={styles.webview}
           javaScriptEnabled
           domStorageEnabled
-
           onMessage={(event) => {
-            console.log(
-              'MENSAGEM DO WEBVIEW:',
-              event.nativeEvent.data
-            );
+            handlePdfMessage(event.nativeEvent.data);
           }}
-
           onError={(event) => {
             console.error(
-              'ERRO NO WEBVIEW:',
+              'Erro na WebView:',
               event.nativeEvent
             );
 
@@ -344,10 +583,9 @@ export default function ReaderScreen() {
               'Ocorreu um erro ao carregar a tela de leitura.'
             );
           }}
-
           onHttpError={(event) => {
             console.error(
-              'ERRO HTTP NO WEBVIEW:',
+              'Erro HTTP na WebView:',
               event.nativeEvent
             );
           }}
@@ -373,6 +611,10 @@ const styles = StyleSheet.create({
     gap: 16,
   },
 
+  headerInfo: {
+    flex: 1,
+  },
+
   backButton: {
     fontSize: 16,
     color: '#6C63FF',
@@ -380,10 +622,15 @@ const styles = StyleSheet.create({
   },
 
   title: {
-    flex: 1,
     fontSize: 15,
     fontWeight: '600',
     color: '#222222',
+  },
+
+  pageLabel: {
+    fontSize: 12,
+    marginTop: 4,
+    color: '#777777',
   },
 
   webview: {

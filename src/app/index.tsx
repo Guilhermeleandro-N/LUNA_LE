@@ -1,5 +1,6 @@
 
-import React from 'react';
+import React, { useCallback, useState } from 'react';
+
 import {
   ScrollView,
   View,
@@ -9,7 +10,7 @@ import {
 } from 'react-native';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { File, Paths } from 'expo-file-system';
 
 import ContinueReadingCard from '../components/ContinueReadingCard';
@@ -17,13 +18,96 @@ import BookListItem from '../components/BookListItem';
 import UploadCard from '../components/UploadCard';
 import styles from '../styles/index';
 
+import {
+  getSavedReadings,
+  saveReadingProgress,
+  type SavedReading,
+} from '../services/readingProgress';
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
+  // Guarda os documentos que já foram abertos
+  const [readings, setReadings] = useState<SavedReading[]>([]);
+
+  // Controla a exibição da lista de documentos
+  const [showAll, setShowAll] = useState(false);
+
+  // B - Recupera as leituras salvas ao abrir a tela inicial
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      async function loadReadings() {
+        try {
+          const saved = await getSavedReadings();
+
+          if (active) {
+            setReadings(saved);
+          }
+        } catch (error) {
+          console.error(
+            'Erro ao carregar leituras:',
+            error
+          );
+
+          if (active) {
+            Alert.alert(
+              'Erro',
+              'Não foi possível carregar os documentos salvos.'
+            );
+          }
+        }
+      }
+
+      void loadReadings();
+
+      return () => {
+        active = false;
+      };
+    }, [])
+  );
+
+  // B - Abre um PDF que já foi lido anteriormente
+  function handleContinueReading(reading: SavedReading) {
+    try {
+      const savedFile = new File(reading.uri);
+
+      if (!savedFile.exists) {
+        Alert.alert(
+          'Arquivo não encontrado',
+          'O documento não está mais disponível. Importe o PDF novamente.'
+        );
+        return;
+      }
+
+      // Abre o leitor usando o caminho do PDF salvo
+      router.push({
+        pathname: './reader',
+        params: {
+          uri: encodeURIComponent(reading.uri),
+          name: reading.name,
+        },
+      });
+
+    } catch (error) {
+      console.error(
+        'Erro ao retomar leitura:',
+        error
+      );
+
+      Alert.alert(
+        'Erro',
+        'Não foi possível abrir o documento.'
+      );
+    }
+  }
+
+  // A - Seleciona e salva um novo PDF
   async function handleOpenPdf() {
     try {
-      // Abre o seletor de arquivos do Android
+      // Abre o seletor de arquivos
       const result = await File.pickFileAsync({
         mimeTypes: ['application/pdf'],
       });
@@ -48,123 +132,210 @@ export default function HomeScreen() {
         uri: file.uri,
         name: file.name,
         size: file.size,
-        type: file.type,
         exists: file.exists,
       });
 
-      // Cria um destino no armazenamento privado do aplicativo
+      // Cria um nome único para o documento
+      const uniqueName = `pdf-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}.pdf`;
+
+      // Salva o documento em armazenamento persistente
       const copiedFile = new File(
-        Paths.cache,
-        `pdf-${Date.now()}.pdf`
+        Paths.document,
+        uniqueName
       );
 
-      // Copia o PDF para o armazenamento privado
       await file.copy(copiedFile);
 
-      // Verifica os dados da cópia
       console.log('PDF COPIADO:', {
-        uriOriginal: file.uri,
-        uriCopia: copiedFile.uri,
-        existe: copiedFile.exists,
-        tamanho: copiedFile.size,
-        tipo: copiedFile.type,
+        uri: copiedFile.uri,
+        exists: copiedFile.exists,
+        size: copiedFile.size,
       });
 
-      // Codifica a URI para preservar os caracteres especiais
-      const encodedUri = encodeURIComponent(copiedFile.uri);
+      if (!copiedFile.exists) {
+        throw new Error(
+          'Não foi possível salvar a cópia do PDF.'
+        );
+      }
 
-      console.log('URI ENVIADA AO LEITOR:', encodedUri);
+      const documentName = file.name || 'Documento PDF';
 
-      // Encaminha a cópia para a tela de leitura
+      // A - Registra o novo PDF na página 1
+      await saveReadingProgress({
+        uri: copiedFile.uri,
+        name: documentName,
+        currentPage: 1,
+        totalPages: 0,
+      });
+
+      console.log(
+        'Documento registrado no histórico:',
+        documentName
+      );
+
+      // Abre o leitor
       router.push({
         pathname: './reader',
         params: {
-          uri: encodedUri,
-          name: file.name,
+          uri: encodeURIComponent(copiedFile.uri),
+          name: documentName,
         },
       });
 
     } catch (error) {
-      console.error('ERRO AO SELECIONAR OU COPIAR PDF:', error);
+      console.error(
+        'Erro ao selecionar ou copiar PDF:',
+        error
+      );
 
       Alert.alert(
         'Erro',
-        'Não foi possível acessar ou copiar o PDF selecionado.'
+        'Não foi possível acessar ou salvar o PDF selecionado.'
       );
     }
   }
 
-  const handleOpenRecent = (title: string) => {
-    console.log('Abrir livro:', title);
-  };
+  // B - Documento aberto mais recentemente
+  const latestReading = readings[0];
+
+  // Calcula o percentual de leitura
+  function calculateProgress(reading: SavedReading) {
+    if (reading.totalPages <= 0) {
+      return 0;
+    }
+
+    return Math.min(
+      100,
+      Math.round(
+        (reading.currentPage / reading.totalPages) * 100
+      )
+    );
+  }
+
+  // Mostra inicialmente apenas os 3 documentos recentes
+  const visibleReadings = showAll
+    ? readings
+    : readings.slice(0, 3);
 
   return (
-    <View style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <View
+      style={[
+        styles.safeArea,
+        { paddingTop: insets.top },
+      ]}
+    >
       <ScrollView
         contentContainerStyle={styles.container}
         showsVerticalScrollIndicator={false}
       >
-        {/* Cabeçalho */}
+        {/* Cabeçalho original */}
         <View style={styles.header}>
           <View style={styles.logoContainer}>
             <View style={styles.logoCircle}>
-              <Text style={styles.logoIcon}>🌙</Text>
+              <Text style={styles.logoIcon}>
+                🌙
+              </Text>
             </View>
 
-            <Text style={styles.logoText}>LunaLê</Text>
+            <Text style={styles.logoText}>
+              LunaLê
+            </Text>
           </View>
 
-          <Text style={styles.librarySubtitle}>Sua Biblioteca</Text>
-          <Text style={styles.greeting}>Como vai, Clara?</Text>
+          <Text style={styles.librarySubtitle}>
+            Sua Biblioteca
+          </Text>
+
+          <Text style={styles.greeting}>
+            Como vai, Clara?
+          </Text>
         </View>
 
-        {/* Continuar lendo */}
-        <ContinueReadingCard
-          bookTitle="A arte de fazer acontecer"
-          currentChapter="8 — Revisando seu sistema"
-          progress={80}
-          onContinue={() => console.log('Continuar leitura')}
-        />
+        {/* B - Continuar a leitura do último PDF */}
+        {latestReading ? (
+          <ContinueReadingCard
+            bookTitle={latestReading.name}
+            currentChapter={
+              `página ${latestReading.currentPage}${
+                latestReading.totalPages > 0
+                  ? ` de ${latestReading.totalPages}`
+                  : ''
+              }`
+            }
+            progress={calculateProgress(latestReading)}
+            onContinue={() =>
+              handleContinueReading(latestReading)
+            }
+          />
+        ) : (
+          <View style={{ marginBottom: 20 }}>
+            <Text
+              style={{
+                fontSize: 14,
+                color: '#777777',
+              }}
+            >
+              Nenhuma leitura iniciada ainda.
+              Abra um PDF para começar!
+            </Text>
+          </View>
+        )}
 
-        {/* Recentes */}
+        {/* Seção de documentos recentes */}
         <View style={styles.sectionHeader}>
           <View>
-            <Text style={styles.sectionCategory}>Últimos Acessos</Text>
-            <Text style={styles.sectionTitle}>Recentes</Text>
+            <Text style={styles.sectionCategory}>
+              Últimos Acessos
+            </Text>
+
+            <Text style={styles.sectionTitle}>
+              Recentes
+            </Text>
           </View>
 
-          <TouchableOpacity onPress={() => console.log('Ver todos')}>
-            <Text style={styles.verTodosText}>Ver Todos</Text>
-          </TouchableOpacity>
+          {readings.length > 3 && (
+            <TouchableOpacity
+              onPress={() => setShowAll(!showAll)}
+            >
+              <Text style={styles.verTodosText}>
+                {showAll ? 'Ver Menos' : 'Ver Todos'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
-        {/* Lista de livros */}
-        <BookListItem
-          title="A Arte de fazer Acontecer"
-          author="Autor"
-          currentPage={120}
-          totalPages={150}
-          onPress={() => handleOpenRecent('A Arte de fazer Acontecer')}
-        />
+        {/* B - Lista dos PDFs realmente salvos */}
+        {visibleReadings.length > 0 ? (
+          visibleReadings.map((reading) => (
+            <BookListItem
+              key={reading.uri}
+              title={reading.name}
+              author="Documento PDF"
+              currentPage={reading.currentPage}
+              totalPages={reading.totalPages}
+              onPress={() =>
+                handleContinueReading(reading)
+              }
+            />
+          ))
+        ) : (
+          <View style={{ marginBottom: 20 }}>
+            <Text
+              style={{
+                fontSize: 14,
+                color: '#777777',
+              }}
+            >
+              Você ainda não possui PDFs recentes.
+            </Text>
+          </View>
+        )}
 
-        <BookListItem
-          title="A Arte de fazer Acontecer"
-          author="Autor"
-          currentPage={120}
-          totalPages={150}
-          onPress={() => handleOpenRecent('A Arte de fazer Acontecer')}
-        />
-
-        <BookListItem
-          title="A Arte de fazer Acontecer"
-          author="Autor"
-          currentPage={120}
-          totalPages={150}
-          onPress={() => handleOpenRecent('A Arte de fazer Acontecer')}
-        />
-
-        {/* Abrir PDF */}
+        {}
         <UploadCard onPress={handleOpenPdf} />
+
       </ScrollView>
     </View>
   );
