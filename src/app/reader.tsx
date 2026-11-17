@@ -18,6 +18,7 @@ import {
   getSavedReading,
   saveReadingProgress,
 } from '../services/readingProgress';
+import { resolveDocumentName } from '../utils/documentName';
 
 type PdfMessage = {
   tipo: 'PDF_INFO' | 'PAGE_CHANGED' | 'ERRO_PDF';
@@ -42,9 +43,9 @@ export default function ReaderScreen() {
       ? decodeURIComponent(rawUri)
       : '';
 
-  const name = (Array.isArray(params.name)
+  const rawName = Array.isArray(params.name)
     ? params.name[0]
-    : params.name) || 'Documento PDF';
+    : params.name;
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -53,6 +54,9 @@ export default function ReaderScreen() {
   const webViewRef = useRef<WebView<WebViewProps> | null>(null);
 
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
+  const [documentName, setDocumentName] = useState(
+    () => resolveDocumentName(rawName).name
+  );
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -81,8 +85,12 @@ export default function ReaderScreen() {
           );
         }
 
-        // Recupera a última página salva
+        // Recupera a última página salva e o nome já normalizado
         const saved = await getSavedReading(uri);
+
+        const resolvedName = saved
+          ? resolveDocumentName(saved.name).name
+          : null;
 
         const savedPage = Math.max(
           1,
@@ -107,6 +115,10 @@ export default function ReaderScreen() {
         }
 
         if (active) {
+          if (resolvedName) {
+            setDocumentName(resolvedName);
+          }
+
           currentPageRef.current = savedPage;
           totalPagesRef.current = 0;
 
@@ -149,7 +161,7 @@ export default function ReaderScreen() {
 
     void saveReadingProgress({
       uri,
-      name,
+      name: documentName,
       currentPage: page,
       totalPages: count,
     })
@@ -850,10 +862,6 @@ export default function ReaderScreen() {
 
             zoomTimer = setTimeout(function () {
               zoomTimer = null;
-
-              // O zoom não é mudança de página: apenas sincroniza a referência
-              // interna sem emitir PAGE_CHANGED.
-              lastReportedPage = getVisiblePage();
               scheduleVisible();
             }, 120);
           }
@@ -1221,7 +1229,7 @@ export default function ReaderScreen() {
 
         <View style={styles.headerInfo}>
           <Text style={styles.title} numberOfLines={1}>
-            {name}
+            {documentName}
           </Text>
 
           {totalPages > 0 && (

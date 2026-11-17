@@ -7,11 +7,13 @@ import {
   Text,
   TouchableOpacity,
   Alert,
+  Platform,
 } from 'react-native';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { File, Paths } from 'expo-file-system';
+import * as DocumentPicker from 'expo-document-picker';
 
 import ContinueReadingCard from '../components/ContinueReadingCard';
 import BookListItem from '../components/BookListItem';
@@ -23,6 +25,12 @@ import {
   saveReadingProgress,
   type SavedReading,
 } from '../services/readingProgress';
+import { resolveDocumentName } from '../utils/documentName';
+import {
+  getPickedAsset,
+  isPdfTooLarge,
+  shouldCopyPickerFileToCache,
+} from '../utils/pdfImport';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -107,20 +115,23 @@ export default function HomeScreen() {
   // A - Seleciona e salva um novo PDF
   async function handleOpenPdf() {
     try {
-      // Abre o seletor de arquivos
-      const result = await File.pickFileAsync({
-        mimeTypes: ['application/pdf'],
+      // O seletor de documentos devolve o nome original do arquivo.
+      // File.pickFileAsync() usa o último segmento da URI, que no Android
+      // pode ser um identificador interno (msf:123456).
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory:
+          shouldCopyPickerFileToCache(Platform.OS),
       });
 
-      if (result.canceled || !result.result) {
+      const asset = getPickedAsset(result);
+
+      if (!asset) {
         return;
       }
 
-      const file = result.result;
-      const maxSize = 100 * 1024 * 1024;
-
-      // Verifica o tamanho do PDF
-      if (file.size > maxSize) {
+      // Verifica o tamanho informado pelo sistema, quando disponível.
+      if (isPdfTooLarge(asset.size)) {
         Alert.alert(
           'Arquivo muito grande',
           'Selecione um PDF de até 100 MB.'
@@ -128,11 +139,14 @@ export default function HomeScreen() {
         return;
       }
 
+      const { name: documentName, usedFallback } =
+        resolveDocumentName(asset.name);
+
       console.log('PDF ORIGINAL:', {
-        uri: file.uri,
-        name: file.name,
-        size: file.size,
-        exists: file.exists,
+        uri: asset.uri,
+        name: asset.name,
+        size: asset.size,
+        documentName,
       });
 
       // Cria um nome único para o documento
@@ -146,7 +160,11 @@ export default function HomeScreen() {
         uniqueName
       );
 
-      await file.copy(copiedFile);
+      const sourceFile = new File(asset.uri);
+
+      // No Android, sourceFile aponta para o content:// original; nunca
+      // devemos apagá-lo, pois ele pertence ao usuário.
+      await sourceFile.copy(copiedFile);
 
       console.log('PDF COPIADO:', {
         uri: copiedFile.uri,
@@ -160,7 +178,23 @@ export default function HomeScreen() {
         );
       }
 
-      const documentName = file.name || 'Documento PDF';
+      // Validação definitiva com o tamanho da cópia persistida.
+      if (isPdfTooLarge(copiedFile.size)) {
+        try {
+          copiedFile.delete();
+        } catch (cleanupError) {
+          console.warn(
+            'Não foi possível remover a cópia grande:',
+            cleanupError
+          );
+        }
+
+        Alert.alert(
+          'Arquivo muito grande',
+          'Selecione um PDF de até 100 MB.'
+        );
+        return;
+      }
 
       // A - Registra o novo PDF na página 1
       await saveReadingProgress({
@@ -174,6 +208,14 @@ export default function HomeScreen() {
         'Documento registrado no histórico:',
         documentName
       );
+
+      if (usedFallback) {
+        Alert.alert(
+          'Nome do documento',
+          'Não foi possível identificar o nome original do PDF. ' +
+            'Ele será exibido como "Documento PDF.pdf".'
+        );
+      }
 
       // Abre o leitor
       router.push({

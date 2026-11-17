@@ -1,6 +1,8 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { resolveDocumentName } from '../utils/documentName';
+
 const STORAGE_KEY = '@luna_le:reading_progress:v1';
 
 // Informações que serão salvas de cada PDF
@@ -14,6 +16,15 @@ export interface SavedReading {
 
 // Evita conflitos entre salvamentos consecutivos
 let pendingWrite: Promise<void> = Promise.resolve();
+
+// Registros antigos podem conter um identificador interno no lugar do nome.
+// A normalização é feita apenas na leitura: o histórico continua intacto.
+function normalizeReading(reading: SavedReading): SavedReading {
+  return {
+    ...reading,
+    name: resolveDocumentName(reading.name).name,
+  };
+}
 
 // Busca os dados armazenados no celular
 async function readStoredReadings(): Promise<SavedReading[]> {
@@ -32,7 +43,9 @@ export async function getSavedReadings(): Promise<SavedReading[]> {
 
   const readings = await readStoredReadings();
 
-  return readings.sort((a, b) => b.updatedAt - a.updatedAt);
+  return readings
+    .map(normalizeReading)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 // Busca o progresso de um PDF específico
@@ -53,6 +66,7 @@ export function saveReadingProgress(
 
     const updated: SavedReading = {
       ...reading,
+      name: resolveDocumentName(reading.name).name,
       currentPage: Math.max(1, Math.trunc(reading.currentPage)),
       totalPages: Math.max(0, Math.trunc(reading.totalPages)),
       updatedAt: Date.now(),
