@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -30,25 +30,38 @@ export default function NoteFormModal({
   onClose,
   onSave,
 }: NoteFormModalProps) {
-  const [content, setContent] = useState('');
-  const [selectedText, setSelectedText] = useState<string | undefined>(
-    undefined
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      {visible && (
+        <NoteForm
+          key={editingNote?.id ?? `new:${initialSelectedText ?? ''}`}
+          initialSelectedText={initialSelectedText}
+          editingNote={editingNote}
+          onClose={onClose}
+          onSave={onSave}
+        />
+      )}
+    </Modal>
   );
+}
+
+function NoteForm({
+  initialSelectedText,
+  editingNote,
+  onClose,
+  onSave,
+}: Omit<NoteFormModalProps, 'visible'>) {
+  const [content, setContent] = useState(editingNote?.content ?? '');
+  const selectedText = editingNote
+    ? editingNote.selectedText
+    : initialSelectedText;
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!visible) return;
-
-    if (editingNote) {
-      setContent(editingNote.content);
-      setSelectedText(editingNote.selectedText);
-    } else {
-      setContent('');
-      setSelectedText(initialSelectedText);
-    }
-    setErrorMsg(null);
-  }, [visible, editingNote, initialSelectedText]);
 
   async function handleSave() {
     if (!content.trim()) {
@@ -74,67 +87,60 @@ export default function NoteFormModal({
   }
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={styles.backdrop}
     >
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.backdrop}
-      >
-        <View style={styles.card}>
-          <Text style={styles.title}>
-            {editingNote ? 'Editar nota' : 'Adicionar nota'}
-          </Text>
+      <View style={styles.card}>
+        <Text style={styles.title}>
+          {editingNote ? 'Editar nota' : 'Adicionar nota'}
+        </Text>
 
-          {!!selectedText && (
-            <View style={styles.quoteBox}>
-              <Text style={styles.quoteLabel}>Trecho marcado</Text>
-              <Text style={styles.quoteText} numberOfLines={4}>
-                “{selectedText}”
-              </Text>
-            </View>
-          )}
-
-          <TextInput
-            value={content}
-            onChangeText={(text) => {
-              setContent(text);
-              if (errorMsg) setErrorMsg(null);
-            }}
-            placeholder="Escreva sua anotação..."
-            placeholderTextColor="#9CA3AF"
-            multiline
-            autoFocus
-            style={styles.input}
-          />
-
-          {!!errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
-
-          <View style={styles.actions}>
-            <TouchableOpacity
-              onPress={onClose}
-              disabled={saving}
-              style={styles.btn}
-            >
-              <Text style={styles.cancelText}>CANCELAR</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={handleSave}
-              disabled={saving}
-              style={[styles.btn, styles.saveBtn]}
-            >
-              <Text style={styles.saveText}>
-                {saving ? 'SALVANDO...' : 'SALVAR'}
-              </Text>
-            </TouchableOpacity>
+        {!!selectedText && (
+          <View style={styles.quoteBox}>
+            <Text style={styles.quoteLabel}>Trecho marcado</Text>
+            <Text style={styles.quoteText} numberOfLines={4}>
+              “{selectedText}”
+            </Text>
           </View>
+        )}
+
+        <TextInput
+          value={content}
+          onChangeText={(text) => {
+            setContent(text);
+            if (errorMsg) setErrorMsg(null);
+          }}
+          placeholder="Escreva sua anotação..."
+          placeholderTextColor="#9CA3AF"
+          multiline
+          autoFocus
+          style={styles.input}
+        />
+
+        {!!errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
+
+        <View style={styles.actions}>
+          <TouchableOpacity
+            onPress={onClose}
+            disabled={saving}
+            style={styles.btn}
+          >
+            <Text style={styles.cancelText}>CANCELAR</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={handleSave}
+            disabled={saving}
+            style={[styles.btn, styles.saveBtn]}
+          >
+            <Text style={styles.saveText}>
+              {saving ? 'SALVANDO...' : 'SALVAR'}
+            </Text>
+          </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
-    </Modal>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 

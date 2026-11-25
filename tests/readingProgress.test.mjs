@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const STORAGE_KEY = '@luna_le:reading_progress:v1';
 const store = new Map();
 
-await mock.module('@react-native-async-storage/async-storage', {
+await mock.module('expo-sqlite/kv-store', {
   exports: {
     default: {
       getItem: async (key) => store.get(key) ?? null,

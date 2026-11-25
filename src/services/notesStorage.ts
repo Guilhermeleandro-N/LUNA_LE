@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import Storage from 'expo-sqlite/kv-store';
 
 const NOTES_STORAGE_KEY = '@luna_le:notes:v1';
 
@@ -16,7 +16,7 @@ export interface ReadingNote {
 let pendingWrite: Promise<void> = Promise.resolve();
 
 async function readStoredNotes(): Promise<ReadingNote[]> {
-  const raw = await AsyncStorage.getItem(NOTES_STORAGE_KEY);
+  const raw = await Storage.getItem(NOTES_STORAGE_KEY);
   if (!raw) return [];
 
   try {
@@ -28,7 +28,7 @@ async function readStoredNotes(): Promise<ReadingNote[]> {
 }
 
 async function writeStoredNotes(notes: ReadingNote[]): Promise<void> {
-  await AsyncStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+  await Storage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
 }
 
 export async function getNotes(documentUri?: string): Promise<ReadingNote[]> {

@@ -114,7 +114,7 @@ export default function ReaderScreen() {
   }, [uri]);
 
   useEffect(() => {
-    void refreshNotes();
+    void Promise.resolve().then(refreshNotes);
   }, [refreshNotes]);
 
   // A - Recupera o progresso salvo e carrega o PDF

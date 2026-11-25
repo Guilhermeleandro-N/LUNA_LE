@@ -1,5 +1,5 @@
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import Storage from 'expo-sqlite/kv-store';
 
 import { resolveDocumentName } from '../utils/documentName';
 
@@ -28,7 +28,7 @@ function normalizeReading(reading: SavedReading): SavedReading {
 
 // Busca os dados armazenados no celular
 async function readStoredReadings(): Promise<SavedReading[]> {
-  const json = await AsyncStorage.getItem(STORAGE_KEY);
+  const json = await Storage.getItem(STORAGE_KEY);
 
   if (!json) return [];
 
@@ -76,7 +76,7 @@ export function saveReadingProgress(
       (item) => item.uri !== reading.uri
     );
 
-    await AsyncStorage.setItem(
+    await Storage.setItem(
       STORAGE_KEY,
       JSON.stringify([updated, ...others])
     );
