@@ -1,4 +1,3 @@
-
 import React, { useCallback, useState } from 'react';
 
 import {
@@ -18,6 +17,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import ContinueReadingCard from '../components/ContinueReadingCard';
 import BookListItem from '../components/BookListItem';
 import UploadCard from '../components/UploadCard';
+import NotesList from '../components/NotesList';
+import NoteFormModal from '../components/NoteFormModal';
 import styles from '../styles/index';
 
 import {
@@ -25,6 +26,12 @@ import {
   saveReadingProgress,
   type SavedReading,
 } from '../services/readingProgress';
+import {
+  deleteNote,
+  getNotes,
+  updateNote,
+  type ReadingNote,
+} from '../services/notesStorage';
 import { resolveDocumentName } from '../utils/documentName';
 import {
   getPickedAsset,
@@ -39,24 +46,38 @@ export default function HomeScreen() {
   // Guarda os documentos que já foram abertos
   const [readings, setReadings] = useState<SavedReading[]>([]);
 
+  // Guarda as notas salvas nos documentos
+  const [notes, setNotes] = useState<ReadingNote[]>([]);
+  const [editingNote, setEditingNote] = useState<ReadingNote | null>(null);
+  const [noteModalVisible, setNoteModalVisible] = useState(false);
+
   // Controla a exibição da lista de documentos
   const [showAll, setShowAll] = useState(false);
 
-  // B - Recupera as leituras salvas ao abrir a tela inicial
+  const refreshNotes = useCallback(async () => {
+    const savedNotes = await getNotes();
+    setNotes(savedNotes);
+  }, []);
+
+  // B - Recupera as leituras e notas salvas ao abrir a tela inicial
   useFocusEffect(
     useCallback(() => {
       let active = true;
 
-      async function loadReadings() {
+      async function loadLibraryData() {
         try {
-          const saved = await getSavedReadings();
+          const [savedReadings, savedNotes] = await Promise.all([
+            getSavedReadings(),
+            getNotes(),
+          ]);
 
           if (active) {
-            setReadings(saved);
+            setReadings(savedReadings);
+            setNotes(savedNotes);
           }
         } catch (error) {
           console.error(
-            'Erro ao carregar leituras:',
+            'Erro ao carregar biblioteca:',
             error
           );
 
@@ -69,13 +90,40 @@ export default function HomeScreen() {
         }
       }
 
-      void loadReadings();
+      void loadLibraryData();
 
       return () => {
         active = false;
       };
     }, [])
   );
+
+  async function handleSaveEditedNote(payload: {
+    content: string;
+    selectedText?: string;
+  }) {
+    if (!editingNote) return;
+    await updateNote(editingNote.id, payload);
+    setEditingNote(null);
+    await refreshNotes();
+  }
+
+  function handleRequestDeleteNote(note: ReadingNote) {
+    Alert.alert(
+      'Excluir nota',
+      'Deseja realmente remover esta nota?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: () => {
+            void deleteNote(note.id).then(refreshNotes);
+          },
+        },
+      ]
+    );
+  }
 
   // B - Abre um PDF que já foi lido anteriormente
   function handleContinueReading(reading: SavedReading) {
@@ -90,7 +138,6 @@ export default function HomeScreen() {
         return;
       }
 
-      // Abre o leitor usando o caminho do PDF salvo
       router.push({
         pathname: './reader',
         params: {
@@ -98,7 +145,6 @@ export default function HomeScreen() {
           name: reading.name,
         },
       });
-
     } catch (error) {
       console.error(
         'Erro ao retomar leitura:',
@@ -115,9 +161,6 @@ export default function HomeScreen() {
   // A - Seleciona e salva um novo PDF
   async function handleOpenPdf() {
     try {
-      // O seletor de documentos devolve o nome original do arquivo.
-      // File.pickFileAsync() usa o último segmento da URI, que no Android
-      // pode ser um identificador interno (msf:123456).
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
         copyToCacheDirectory:
@@ -130,7 +173,6 @@ export default function HomeScreen() {
         return;
       }
 
-      // Verifica o tamanho informado pelo sistema, quando disponível.
       if (isPdfTooLarge(asset.size)) {
         Alert.alert(
           'Arquivo muito grande',
@@ -142,19 +184,10 @@ export default function HomeScreen() {
       const { name: documentName, usedFallback } =
         resolveDocumentName(asset.name);
 
-      console.log('PDF ORIGINAL:', {
-        uri: asset.uri,
-        name: asset.name,
-        size: asset.size,
-        documentName,
-      });
-
-      // Cria um nome único para o documento
       const uniqueName = `pdf-${Date.now()}-${Math.random()
         .toString(36)
         .slice(2, 8)}.pdf`;
 
-      // Salva o documento em armazenamento persistente
       const copiedFile = new File(
         Paths.document,
         uniqueName
@@ -162,15 +195,7 @@ export default function HomeScreen() {
 
       const sourceFile = new File(asset.uri);
 
-      // No Android, sourceFile aponta para o content:// original; nunca
-      // devemos apagá-lo, pois ele pertence ao usuário.
       await sourceFile.copy(copiedFile);
-
-      console.log('PDF COPIADO:', {
-        uri: copiedFile.uri,
-        exists: copiedFile.exists,
-        size: copiedFile.size,
-      });
 
       if (!copiedFile.exists) {
         throw new Error(
@@ -178,7 +203,6 @@ export default function HomeScreen() {
         );
       }
 
-      // Validação definitiva com o tamanho da cópia persistida.
       if (isPdfTooLarge(copiedFile.size)) {
         try {
           copiedFile.delete();
@@ -196,18 +220,12 @@ export default function HomeScreen() {
         return;
       }
 
-      // A - Registra o novo PDF na página 1
       await saveReadingProgress({
         uri: copiedFile.uri,
         name: documentName,
         currentPage: 1,
         totalPages: 0,
       });
-
-      console.log(
-        'Documento registrado no histórico:',
-        documentName
-      );
 
       if (usedFallback) {
         Alert.alert(
@@ -217,7 +235,6 @@ export default function HomeScreen() {
         );
       }
 
-      // Abre o leitor
       router.push({
         pathname: './reader',
         params: {
@@ -225,7 +242,6 @@ export default function HomeScreen() {
           name: documentName,
         },
       });
-
     } catch (error) {
       console.error(
         'Erro ao selecionar ou copiar PDF:',
@@ -239,10 +255,8 @@ export default function HomeScreen() {
     }
   }
 
-  // B - Documento aberto mais recentemente
   const latestReading = readings[0];
 
-  // Calcula o percentual de leitura
   function calculateProgress(reading: SavedReading) {
     if (reading.totalPages <= 0) {
       return 0;
@@ -256,7 +270,6 @@ export default function HomeScreen() {
     );
   }
 
-  // Mostra inicialmente apenas os 3 documentos recentes
   const visibleReadings = showAll
     ? readings
     : readings.slice(0, 3);
@@ -375,10 +388,42 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {}
-        <UploadCard onPress={handleOpenPdf} />
+        {/* Seção de notas salvas */}
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionCategory}>
+              Anotações e Citações
+            </Text>
 
+            <Text style={styles.sectionTitle}>
+              Minhas Notas ({notes.length})
+            </Text>
+          </View>
+        </View>
+
+        <NotesList
+          notes={notes}
+          showDocumentName
+          emptyMessage="Nenhuma nota salva ainda. Abra um PDF para marcar trechos e adicionar notas."
+          onEdit={(note) => {
+            setEditingNote(note);
+            setNoteModalVisible(true);
+          }}
+          onDelete={handleRequestDeleteNote}
+        />
+
+        <UploadCard onPress={handleOpenPdf} />
       </ScrollView>
+
+      <NoteFormModal
+        visible={noteModalVisible}
+        editingNote={editingNote}
+        onClose={() => {
+          setNoteModalVisible(false);
+          setEditingNote(null);
+        }}
+        onSave={handleSaveEditedNote}
+      />
     </View>
   );
 }

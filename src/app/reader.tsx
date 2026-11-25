@@ -1,5 +1,4 @@
-
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   View,
@@ -7,6 +6,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
+  Modal,
+  ScrollView,
+  Alert,
 } from 'react-native';
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -18,13 +20,24 @@ import {
   getSavedReading,
   saveReadingProgress,
 } from '../services/readingProgress';
+import {
+  createNote,
+  deleteNote,
+  getNotes,
+  updateNote,
+  type ReadingNote,
+} from '../services/notesStorage';
+import NoteFormModal from '../components/NoteFormModal';
+import NotesList from '../components/NotesList';
+import { COLORS } from '../styles/theme';
 import { resolveDocumentName } from '../utils/documentName';
 
 type PdfMessage = {
-  tipo: 'PDF_INFO' | 'PAGE_CHANGED' | 'ERRO_PDF';
+  tipo: 'PDF_INFO' | 'PAGE_CHANGED' | 'ERRO_PDF' | 'TEXT_SELECTED';
   page?: number;
   totalPages?: number;
   mensagem?: string;
+  selectedText?: string;
 };
 
 export default function ReaderScreen() {
@@ -50,8 +63,8 @@ export default function ReaderScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  // Referência usada para enviar comandos de zoom ao documento dentro do WebView.
   const webViewRef = useRef<WebView<WebViewProps> | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
   const [documentName, setDocumentName] = useState(
@@ -65,8 +78,44 @@ export default function ReaderScreen() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
 
+  // Estado das notas e seleção de texto
+  const [notes, setNotes] = useState<ReadingNote[]>([]);
+  const [selectedText, setSelectedText] = useState('');
+  const [noteModalVisible, setNoteModalVisible] = useState(false);
+  const [editingNote, setEditingNote] = useState<ReadingNote | null>(null);
+  const [notesDrawerVisible, setNotesDrawerVisible] = useState(false);
+  const [showSavedToast, setShowSavedToast] = useState(false);
+
   const currentPageRef = useRef(1);
   const totalPagesRef = useRef(0);
+
+  const triggerSavedToast = useCallback(() => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setShowSavedToast(true);
+    toastTimeoutRef.current = setTimeout(() => {
+      setShowSavedToast(false);
+    }, 2200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const refreshNotes = useCallback(async () => {
+    if (!uri) return;
+    const list = await getNotes(uri);
+    setNotes(list);
+  }, [uri]);
+
+  useEffect(() => {
+    void refreshNotes();
+  }, [refreshNotes]);
 
   // A - Recupera o progresso salvo e carrega o PDF
   useEffect(() => {
@@ -85,7 +134,6 @@ export default function ReaderScreen() {
           );
         }
 
-        // Recupera a última página salva e o nome já normalizado
         const saved = await getSavedReading(uri);
 
         const resolvedName = saved
@@ -105,7 +153,6 @@ export default function ReaderScreen() {
           );
         }
 
-        // Lê o arquivo como Base64
         const base64 = await pdfFile.base64();
 
         if (!base64) {
@@ -125,11 +172,6 @@ export default function ReaderScreen() {
           setInitialPage(savedPage);
           setCurrentPage(savedPage);
           setPdfBase64(base64);
-
-          console.log(
-            'Última página salva:',
-            savedPage
-          );
         }
       } catch (error) {
         console.error('Erro ao carregar PDF:', error);
@@ -164,20 +206,12 @@ export default function ReaderScreen() {
       name: documentName,
       currentPage: page,
       totalPages: count,
-    })
-      .then(() => {
-        console.log('Página salva:', page);
-      })
-      .catch((error) => {
-        console.error(
-          'Erro ao salvar página:',
-          error
-        );
-      });
+    }).catch((error) => {
+      console.error('Erro ao salvar página:', error);
+    });
   }
 
   // B - Solicita um novo nível de zoom ao renderizador do PDF.
-  // O zoom é relativo, portanto não depende de estado espelhado no React.
   function zoomBy(factor: number) {
     const script =
       '(function(){ if (window.lunaZoomBy) { window.lunaZoomBy(' +
@@ -185,6 +219,52 @@ export default function ReaderScreen() {
       '); } return true; })();';
 
     webViewRef.current?.injectJavaScript(script);
+  }
+
+  function openNewNoteModal() {
+    setEditingNote(null);
+    setNoteModalVisible(true);
+  }
+
+  async function handleSaveNote(payload: {
+    content: string;
+    selectedText?: string;
+  }) {
+    if (!uri) return;
+
+    if (editingNote) {
+      await updateNote(editingNote.id, payload);
+    } else {
+      await createNote({
+        documentUri: uri,
+        documentName,
+        page: currentPageRef.current,
+        selectedText: payload.selectedText,
+        content: payload.content,
+      });
+      setSelectedText('');
+      triggerSavedToast();
+    }
+
+    setEditingNote(null);
+    await refreshNotes();
+  }
+
+  function handleRequestDeleteNote(note: ReadingNote) {
+    Alert.alert(
+      'Excluir nota',
+      'Deseja realmente remover esta nota?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: () => {
+            void deleteNote(note.id).then(refreshNotes);
+          },
+        },
+      ]
+    );
   }
 
   // A - Recebe as mensagens enviadas pelo PDF.js
@@ -205,7 +285,11 @@ export default function ReaderScreen() {
       return;
     }
 
-    // Recebe o total de páginas do PDF
+    if (message.tipo === 'TEXT_SELECTED') {
+      setSelectedText((message.selectedText || '').trim());
+      return;
+    }
+
     if (message.tipo === 'PDF_INFO') {
       const count = Number(message.totalPages);
 
@@ -227,7 +311,6 @@ export default function ReaderScreen() {
       savePage(page, count);
     }
 
-    // Detecta quando o usuário muda de página
     if (message.tipo === 'PAGE_CHANGED') {
       const newPage = Number(message.page);
 
@@ -246,12 +329,11 @@ export default function ReaderScreen() {
       currentPageRef.current = page;
       setCurrentPage(page);
 
-      // Salva automaticamente a nova página
       savePage(page, totalPagesRef.current);
     }
   }
 
-  // B - PDF.js com renderização em alta resolução, zoom real e páginas sob demanda
+  // B - PDF.js com renderização em alta resolução, camada de texto selecionável e zoom sob demanda
   const html = useMemo(() => {
     if (!pdfBase64) return '';
 
@@ -279,7 +361,6 @@ export default function ReaderScreen() {
 
           body {
             padding: 12px;
-            /* O pinch é tratado em JS: o zoom nativo apenas esticaria o canvas. */
             touch-action: pan-x pan-y;
             -webkit-text-size-adjust: 100%;
           }
@@ -288,7 +369,6 @@ export default function ReaderScreen() {
             width: 100%;
           }
 
-          /* Wrapper reserva o espaço da página mesmo antes dela ser renderizada. */
           .page {
             display: block;
             position: relative;
@@ -302,6 +382,31 @@ export default function ReaderScreen() {
             display: block;
             width: 100%;
             height: 100%;
+          }
+
+          .textLayer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            line-height: 1;
+            color: transparent;
+            user-select: text;
+            -webkit-user-select: text;
+          }
+
+          .textLayer > span {
+            color: transparent;
+            position: absolute;
+            white-space: pre;
+            cursor: text;
+            transform-origin: 0% 0%;
+          }
+
+          .textLayer ::selection {
+            background: rgba(92, 116, 224, 0.35);
           }
 
           #loading {
@@ -329,13 +434,11 @@ export default function ReaderScreen() {
           let baseWidth = 1;
           let baseHeight = 1;
 
-          // 1 = largura da página ajustada à tela.
           let zoom = 1;
 
           const MIN_ZOOM = 0.6;
           const MAX_ZOOM = 4;
 
-          // Limites de memória: evita canvas gigantes em telas 3x ou zoom alto.
           const MAX_DPR = 2;
           const MAX_CANVAS_WIDTH = 2560;
           const MAX_CANVAS_PIXELS = 12000000;
@@ -347,6 +450,7 @@ export default function ReaderScreen() {
           );
 
           const wrappers = [];
+          const textLayers = [];
           const metrics = {};
           const renderInfo = {};
           const jobs = {};
@@ -361,6 +465,7 @@ export default function ReaderScreen() {
           let pinching = false;
           let pinch = null;
           let lastEvict = 0;
+          let lastSelectedText = '';
 
           function sendMessage(tipo, data) {
             if (window.ReactNativeWebView) {
@@ -372,6 +477,23 @@ export default function ReaderScreen() {
               );
             }
           }
+
+          function notifySelection() {
+            const sel = window.getSelection ? window.getSelection() : null;
+            const txt = sel ? sel.toString().replace(/\\s+/g, ' ').trim() : '';
+            if (txt !== lastSelectedText) {
+              lastSelectedText = txt;
+              sendMessage('TEXT_SELECTED', { selectedText: txt });
+            }
+          }
+
+          document.addEventListener('selectionchange', function () {
+            setTimeout(notifySelection, 60);
+          });
+
+          document.addEventListener('touchend', function () {
+            setTimeout(notifySelection, 120);
+          });
 
           function clampZoom(value) {
             return Math.min(
@@ -391,9 +513,6 @@ export default function ReaderScreen() {
             return availableWidth() / baseWidth;
           }
 
-          // Identifica a resolução já aplicada a cada canvas.
-          // O generation impede reaproveitar um canvas cuja renderização
-          // foi cancelada por uma mudança de zoom.
           function currentKey() {
             const s = fitScale() * zoom;
             return generation + '|' +
@@ -401,7 +520,6 @@ export default function ReaderScreen() {
               dpr.toFixed(2) + '|' + s.toFixed(4);
           }
 
-          // Densidade efetiva: usa o DPR, limitada por largura e área do canvas.
           function outputScale(metric) {
             const size = metric || {
               width: baseWidth,
@@ -450,7 +568,6 @@ export default function ReaderScreen() {
             return element ? element.offsetTop : 0;
           }
 
-          // Busca binária da página que contém uma posição do documento.
           function pageAtY(y) {
             let low = 1;
             let high = pageCount;
@@ -471,8 +588,6 @@ export default function ReaderScreen() {
           }
 
           function captureAnchor(clientY, clientX) {
-            // Mesma referência usada por getVisiblePage(), para que o zoom
-            // não altere a página detectada pela rolagem.
             const offsetY = typeof clientY === 'number'
               ? clientY
               : 100;
@@ -530,7 +645,6 @@ export default function ReaderScreen() {
             );
           }
 
-          // Descobre qual página está visível (mesma regra da versão anterior).
           function getVisiblePage() {
             if (pageCount < 1) return 1;
 
@@ -569,9 +683,7 @@ export default function ReaderScreen() {
               if (info && info.task) {
                 try {
                   info.task.cancel();
-                } catch (error) {
-                  // A renderização já tinha terminado.
-                }
+                } catch (error) {}
 
                 info.task = null;
               }
@@ -592,7 +704,35 @@ export default function ReaderScreen() {
             return metrics[n];
           }
 
-          // Renderiza uma página na resolução necessária para o zoom atual.
+          async function renderTextOverlay(page, viewport, n) {
+            const textLayer = textLayers[n - 1];
+            if (!textLayer || typeof pdfjsLib.renderTextLayer !== 'function') {
+              return;
+            }
+
+            textLayer.innerHTML = '';
+            textLayer.style.width = Math.round(viewport.width) + 'px';
+            textLayer.style.height = Math.round(viewport.height) + 'px';
+            textLayer.style.setProperty('--scale-factor', String(viewport.scale));
+
+            try {
+              const textContent = await page.getTextContent();
+              const renderTask = pdfjsLib.renderTextLayer({
+                textContentSource: textContent,
+                container: textLayer,
+                viewport: viewport,
+                textDivs: []
+              });
+              if (renderTask && renderTask.promise) {
+                await renderTask.promise;
+              }
+            } catch (err) {
+              if (!isCancelled(err)) {
+                console.warn('TextLayer pág ' + n + ':', err);
+              }
+            }
+          }
+
           async function renderOne(n, renderGeneration, key) {
             if (destroyed || renderGeneration !== generation) {
               return;
@@ -628,13 +768,11 @@ export default function ReaderScreen() {
 
             if (!context) return;
 
-            // Tamanho visual = viewport em CSS pixels.
             canvas.style.width =
               Math.round(viewport.width) + 'px';
             canvas.style.height =
               Math.round(viewport.height) + 'px';
 
-            // Resolução interna = viewport multiplicado pela densidade efetiva.
             canvas.width = Math.max(
               1,
               Math.floor(viewport.width * pixelRatio)
@@ -646,7 +784,6 @@ export default function ReaderScreen() {
 
             applySize(n);
 
-            // O transform faz o PDF.js desenhar na resolução interna do canvas.
             const task = page.render({
               canvasContext: context,
               viewport: viewport,
@@ -665,6 +802,7 @@ export default function ReaderScreen() {
                 renderInfo[n] === info
               ) {
                 info.done = true;
+                await renderTextOverlay(page, viewport, n);
               }
             } catch (error) {
               if (!isCancelled(error)) {
@@ -680,8 +818,6 @@ export default function ReaderScreen() {
             }
           }
 
-          // Enfileira a (re)renderização de uma página. Renderizações antigas
-          // da mesma página são canceladas e aguardadas antes da nova.
           function requestRender(n) {
             if (destroyed || pinching || pinch) return;
             if (n < 1 || n > pageCount) return;
@@ -699,9 +835,7 @@ export default function ReaderScreen() {
             if (previous && previous.task) {
               try {
                 previous.task.cancel();
-              } catch (error) {
-                // Já concluída.
-              }
+              } catch (error) {}
 
               previous.task = null;
             }
@@ -710,7 +844,7 @@ export default function ReaderScreen() {
 
             if (!canvas) {
               canvas = document.createElement('canvas');
-              wrappers[n - 1].appendChild(canvas);
+              wrappers[n - 1].insertBefore(canvas, textLayers[n - 1] || null);
             }
 
             const info = {
@@ -763,7 +897,6 @@ export default function ReaderScreen() {
             return answer;
           }
 
-          // Libera canvases distantes: mantém memória limitada em PDFs longos.
           function evictFarPages() {
             const top = window.scrollY - BUFFER * 3;
             const bottom =
@@ -786,9 +919,7 @@ export default function ReaderScreen() {
                 if (info.task) {
                   try {
                     info.task.cancel();
-                  } catch (error) {
-                    // Já concluída.
-                  }
+                  } catch (error) {}
                 }
 
                 if (
@@ -800,13 +931,16 @@ export default function ReaderScreen() {
                   );
                 }
 
+                if (textLayers[n - 1]) {
+                  textLayers[n - 1].innerHTML = '';
+                }
+
                 delete renderInfo[n];
                 delete jobs[n];
               }
             });
           }
 
-          // Renderiza somente as páginas próximas da área visível.
           function scheduleVisible() {
             if (destroyed || pinching || !readerReady) {
               return;
@@ -850,7 +984,6 @@ export default function ReaderScreen() {
             });
           }
 
-          // Invalida renderizações em andamento e agenda a nova resolução.
           function commitZoom() {
             generation++;
             cancelAllTasks();
@@ -866,7 +999,6 @@ export default function ReaderScreen() {
             }, 120);
           }
 
-          // Ajusta o layout imediatamente (visual) e agenda o re-render real.
           function applyZoom(nextZoom, anchor, deferred) {
             const next = clampZoom(nextZoom);
 
@@ -896,7 +1028,6 @@ export default function ReaderScreen() {
             }
           }
 
-          // Exposto ao React Native para os botões de zoom do cabeçalho.
           window.lunaZoomBy = function (factor) {
             if (!readerReady) return;
 
@@ -936,8 +1067,6 @@ export default function ReaderScreen() {
             commitZoom();
           }
 
-          // Pinch implementado na página: a cada mudança o layout é recalculado
-          // e, ao terminar o gesto, o PDF.js renderiza na nova resolução.
           document.addEventListener(
             'touchstart',
             function (event) {
@@ -1031,8 +1160,6 @@ export default function ReaderScreen() {
             { passive: false }
           );
 
-          // WebKit (iOS) ignora "user-scalable=no" em versões recentes.
-          // Estes eventos não existem no Android e evitam o zoom nativo no iOS.
           document.addEventListener(
             'gesturestart',
             function (event) {
@@ -1049,7 +1176,6 @@ export default function ReaderScreen() {
             { passive: false }
           );
 
-          // Mantém a leitura utilizável se a orientação/largura mudar.
           window.addEventListener('resize', function () {
             if (destroyed || !readerReady) return;
 
@@ -1077,8 +1203,6 @@ export default function ReaderScreen() {
                 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
               const binary = atob(base64);
-
-              // Libera a string Base64 depois de decodificada.
               base64 = '';
 
               const bytes = new Uint8Array(binary.length);
@@ -1105,14 +1229,12 @@ export default function ReaderScreen() {
                 height: baseHeight
               };
 
-              // Informa o total de páginas ao aplicativo
               sendMessage('PDF_INFO', {
                 totalPages: pageCount
               });
 
               loadingElement.remove();
 
-              // Reserva o espaço de todas as páginas; o conteúdo vem sob demanda.
               const fragment =
                 document.createDocumentFragment();
 
@@ -1126,7 +1248,12 @@ export default function ReaderScreen() {
                   String(n)
                 );
 
+                const textLayer = document.createElement('div');
+                textLayer.className = 'textLayer';
+                wrapper.appendChild(textLayer);
+
                 wrappers.push(wrapper);
+                textLayers.push(textLayer);
                 fragment.appendChild(wrapper);
               }
 
@@ -1136,7 +1263,6 @@ export default function ReaderScreen() {
 
               applyLayout();
 
-              // B - Retoma a leitura na última página salva
               const targetPage = Math.min(
                 pageCount,
                 Math.max(1, initialPage)
@@ -1166,7 +1292,6 @@ export default function ReaderScreen() {
                 });
               });
 
-              // Registra a página ao sair da WebView
               window.addEventListener(
                 'pagehide',
                 reportCurrentPage
@@ -1239,6 +1364,24 @@ export default function ReaderScreen() {
           )}
         </View>
 
+        <TouchableOpacity
+          style={styles.noteButton}
+          onPress={openNewNoteModal}
+        >
+          <Text style={styles.noteButtonText}>
+            {selectedText ? '+ Nota (trecho)' : '+ Nota'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.listButton}
+          onPress={() => setNotesDrawerVisible(true)}
+        >
+          <Text style={styles.listButtonText}>
+            Notas ({notes.length})
+          </Text>
+        </TouchableOpacity>
+
         <View style={styles.zoomControls}>
           <TouchableOpacity
             accessibilityLabel="Diminuir zoom"
@@ -1263,7 +1406,7 @@ export default function ReaderScreen() {
         <View style={styles.center}>
           <ActivityIndicator
             size="large"
-            color="#6C63FF"
+            color={COLORS.primary}
           />
 
           <Text style={styles.message}>
@@ -1323,6 +1466,71 @@ export default function ReaderScreen() {
           }}
         />
       ) : null}
+
+      {/* Aviso inferior semelhante ao "Citação salva" do vídeo */}
+      {showSavedToast && (
+        <View
+          style={[
+            styles.toastContainer,
+            { bottom: Math.max(20, insets.bottom + 12) },
+          ]}
+        >
+          <Text style={styles.toastText}>Citação salva</Text>
+        </View>
+      )}
+
+      {/* Modal de criação e edição de nota */}
+      <NoteFormModal
+        visible={noteModalVisible}
+        initialSelectedText={selectedText || undefined}
+        editingNote={editingNote}
+        onClose={() => {
+          setNoteModalVisible(false);
+          setEditingNote(null);
+        }}
+        onSave={handleSaveNote}
+      />
+
+      {/* Modal de lista de notas do documento */}
+      <Modal
+        visible={notesDrawerVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setNotesDrawerVisible(false)}
+      >
+        <View style={styles.drawerBackdrop}>
+          <View
+            style={[
+              styles.drawerCard,
+              { paddingBottom: Math.max(20, insets.bottom + 12) },
+            ]}
+          >
+            <View style={styles.drawerHeader}>
+              <Text style={styles.drawerTitle}>
+                Notas do documento ({notes.length})
+              </Text>
+              <TouchableOpacity
+                onPress={() => setNotesDrawerVisible(false)}
+              >
+                <Text style={styles.drawerClose}>Fechar</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <NotesList
+                notes={notes}
+                emptyMessage="Nenhuma nota adicionada neste PDF ainda. Selecione um trecho e toque em '+ Nota'."
+                onEdit={(note) => {
+                  setNotesDrawerVisible(false);
+                  setEditingNote(note);
+                  setNoteModalVisible(true);
+                }}
+                onDelete={handleRequestDeleteNote}
+              />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1330,17 +1538,18 @@ export default function ReaderScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: COLORS.white,
   },
 
   header: {
-    height: 60,
+    minHeight: 60,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEEEEE',
-    gap: 16,
+    borderBottomColor: COLORS.border,
+    gap: 8,
   },
 
   headerInfo: {
@@ -1348,42 +1557,68 @@ const styles = StyleSheet.create({
   },
 
   backButton: {
-    fontSize: 16,
-    color: '#6C63FF',
+    fontSize: 15,
+    color: COLORS.primary,
     fontWeight: '600',
   },
 
   title: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#222222',
+    color: COLORS.textPrimary,
   },
 
   pageLabel: {
+    fontSize: 11,
+    marginTop: 2,
+    color: COLORS.textSecondary,
+  },
+
+  noteButton: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+
+  noteButtonText: {
+    color: COLORS.white,
     fontSize: 12,
-    marginTop: 4,
-    color: '#777777',
+    fontWeight: '700',
+  },
+
+  listButton: {
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+
+  listButtonText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '700',
   },
 
   zoomControls: {
     flexDirection: 'row',
-    gap: 6,
+    gap: 4,
   },
 
   zoomButton: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E3E3E3',
+    borderColor: COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   zoomButtonText: {
-    fontSize: 20,
-    lineHeight: 22,
-    color: '#6C63FF',
+    fontSize: 18,
+    lineHeight: 20,
+    color: COLORS.primary,
     fontWeight: '600',
   },
 
@@ -1401,19 +1636,19 @@ const styles = StyleSheet.create({
 
   message: {
     fontSize: 14,
-    color: '#777777',
+    color: COLORS.textSecondary,
     textAlign: 'center',
   },
 
   errorTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333333',
+    color: COLORS.textPrimary,
     textAlign: 'center',
   },
 
   retryButton: {
-    backgroundColor: '#6C63FF',
+    backgroundColor: COLORS.primary,
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 8,
@@ -1421,7 +1656,56 @@ const styles = StyleSheet.create({
   },
 
   retryButtonText: {
-    color: '#FFFFFF',
+    color: COLORS.white,
     fontWeight: '600',
+  },
+
+  toastContainer: {
+    position: 'absolute',
+    alignSelf: 'center',
+    backgroundColor: '#3A3A3A',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 24,
+    elevation: 4,
+  },
+
+  toastText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  drawerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+
+  drawerCard: {
+    maxHeight: '78%',
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 16,
+  },
+
+  drawerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+
+  drawerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+
+  drawerClose: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
 });
